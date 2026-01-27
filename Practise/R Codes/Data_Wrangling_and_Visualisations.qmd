@@ -1,6 +1,9 @@
 ---
 title: "Week 1 Demonstration"
 format: html
+execute:
+  echo: true
+  warning: false
 editor: visual
 ---
 
