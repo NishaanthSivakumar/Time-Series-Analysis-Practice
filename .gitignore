@@ -1,0 +1,16 @@
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.RDS
+
+# Outputs
+*.html
+*.pdf
+
+# macOS
+.DS_Store
+
+# Quarto / RMarkdown
+*_cache/
+*_files/
