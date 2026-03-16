@@ -1,0 +1,1274 @@
+---
+title: "ST5209/X Assignment 3"
+format: pdf
+editor: visual
+author: "Sivakumar Nishaanth"
+---
+
+## Set up
+
+1.  Make sure you have the following installed on your system: $\text{\LaTeX}$, R4.2.2+, RStudio 2023.12+, and Quarto 1.3.450+.
+2.  Pull changes from the course [repo](https://github.com/yanshuotan/st5209-2024).
+3.  Create a separate folder in the root directory of the repo, label it with your name, e.g. `yanshuo-assignments`
+4.  Copy the assignment1.qmd file over to this directory.
+5.  Modify the duplicated document with your solutions, writing all R code as code chunks.
+6.  When running code, make sure your working directory is set to be the folder with your assignment .qmd file, e.g. `yanshuo-assignments`. This is to ensure that all file paths are valid.[^1]
+
+[^1]: You may view and set the working directory using `getwd()` and `setwd()`.
+
+## Submission
+
+1.  Render the document to get a .pdf printout.
+2.  Submit both the .qmd and .pdf files to Canvas.
+
+```{r}
+#| message: FALSE
+#| echo: FALSE
+library(tidyverse)
+library(fpp3)
+library(tsibble)
+library(fable)
+library(readr)
+```
+
+## 1. Holt-Winters, residuals, and forecast accuracy
+
+Consider the antidiabetic drug sales time series which can be loaded using the following code snippet.
+
+```{r}
+diabetes <- read_rds("../_data/cleaned/diabetes.rds") |>
+  select(TotalC)
+```
+
+a.  Fit the following exponential smoothing models on the entire time series:
+
+    -   Holt-Winters with multiplicative noise and seasonality,
+
+        ```{r}
+        fit_hw_mul <- diabetes |>
+          model(
+            hw_mul = ETS(TotalC ~ error("M") + trend("A") + season("M"))
+          )
+        report(fit_hw_mul)
+        ```
+
+    -   Holt-Winters with a log transformation, with additive noise and seasonality,
+
+        ```{r}
+        fit_hw_log_add <- diabetes |>
+          model(
+            hw_log_add = ETS(log(TotalC) ~ error("A") + trend("A") + season("A"))
+          )
+        report(fit_hw_log_add)
+        ```
+
+    -   Holt-Winters with multiplicative noise and seasonality, and damping.
+
+        ```{r}
+        fit_hw_mul_damped <- diabetes |>
+          model(
+            hw_mul_damped = ETS(TotalC ~ error("M") + trend("Ad") + season("M"))
+          )
+        report(fit_hw_mul_damped)
+        ```
+
+b.  Make ACF plots for the innovation residuals of these three models. Does this suggest that the residuals are drawn from a white noise model?
+
+    ```{r}
+    fits <- diabetes |>
+      model(
+        hw_mul = ETS(TotalC ~ error("M") + trend("A") + season("M")),
+        hw_log_add = ETS(log(TotalC) ~ error("A") + trend("A") + season("A")),
+        hw_mul_damped = ETS(TotalC ~ error("M") + trend("Ad") + season("M"))
+      )
+
+    aug_fits <- augment(fits)
+    aug_fits |>
+      ACF(.innov) |>
+      autoplot() +
+      facet_wrap(~ .model, ncol = 1) +
+      labs(
+        title = "ACF plots of innovation residuals",
+        x = "Lag",
+        y = "ACF"
+      )
+    ```
+
+    *The ACF plots of the innovation residuals suggest that the residuals are not purely white noise for any of the three models. This is because several autocorrelations exceed the approximate significance bounds, indicating that some serial dependence remains in the residuals. Hence, the fitted Holt-Winters models have not fully captured all of the dependence structure in the time series, although the amount of remaining autocorrelation appears to be relatively small*.
+
+c.  Calculate the p-value from a Ljung-Box test on the residuals with lag $h=8$. Does this suggest that the residuals are drawn from a white noise model? What does this mean about the fitted model?
+
+    ```{r}
+    fits |>
+      augment() |>
+      features(.innov, ljung_box, lag = 8, dof = 0)
+    ```
+
+    *The Ljung–Box test was performed on the innovation residuals with lag h=8. The p-values for the three models (0.0424, 0.0420, and 0.0141) are all below the 0.05 significance level. Hence, the null hypothesis that the residuals are white noise is rejected. This suggests that there is remaining autocorrelation in the residuals, indicating that the Holt–Winters models have not fully captured the underlying structure of the time series.*
+
+d.  Perform time series cross-validation for the three methods, using `.init = 50` and `.step = 10`, and with the forecast horizon $h=4$. Which method has the best RMSSE? How many data points is the error averaged over in total?
+
+    ```{r}
+    diabetes_cv <- diabetes |>
+      stretch_tsibble(.init = 50, .step = 10)
+
+    cv_fits <- diabetes_cv |>
+      model(
+        hw_mul = ETS(TotalC ~ error("M") + trend("A") + season("M")),
+        hw_log_add = ETS(log(TotalC) ~ error("A") + trend("A") + season("A")),
+        hw_mul_damped = ETS(TotalC ~ error("M") + trend("Ad") + season("M"))
+      )
+
+    cv_fc <- cv_fits |>
+      forecast(h = 4)
+
+    cv_acc <- cv_fc |>
+      accuracy(diabetes, measures = list(RMSSE = RMSSE))
+
+    cv_acc
+    dim(diabetes)
+
+    ```
+
+    Based on the time series cross-validation results, the $\texttt{hw\_log\_add}$ model has the lowest RMSSE (0.655), and therefore performs best among the three models.
+
+    The time series contains 204 observations. With an initial training size of $\text{.init}=50$, step size $\text{.step}=10$, and forecast horizon $h=4$, the forecast origin must satisfy
+
+    $$
+    \text{origin} + h \le 204
+    $$
+
+    which implies
+
+    $$
+    \text{origin} \le 204 - 4 = 200.
+    $$
+
+    Hence the forecast origins are
+
+    $$
+    50,\,60,\,70,\,\ldots,\,200.
+    $$
+
+    The number of forecast origins is
+
+    $$
+    \frac{200-50}{10}+1 = 16.
+    $$
+
+    Since the forecast horizon is $h=4$, each origin produces four forecast errors, giving a total number of forecast errors of
+
+    $$
+    16 \times 4 = 64.
+    $$
+
+    Therefore, the RMSSE is averaged over 64 forecast errors in total.
+
+## 2. ETS parameters, prediction intervals
+
+The dataset `hh_budget` contains annual indicators of household budgets for a few countries.
+
+a.  Fit `ETS` on the time series comprising savings as a portion of household budgets in Canada. Do not specify what type of ETS model to fit, instead allowing the function to perform automatic model selection.
+
+    ```{r}
+    canada_savings <- hh_budget |>
+      filter(Country == "Canada")
+    fit_ets <- canada_savings |>
+      model(ETS(Savings))
+    report(fit_ets)
+    ```
+
+b.  Which ETS model was selected?
+
+    *The selected model is ETS(A,N,N), which corresponds to a model with additive errors, no trend component, and no seasonal component. This indicates that the savings series is best modeled using simple exponential smoothing without trend or seasonality.*
+
+c.  What are the fitted parameters of the model?
+
+    ```{r}
+    tidy(fit_ets)
+
+    ```
+
+    *The fitted model is ETS(A,N,N). The estimated smoothing parameter is* $$\alpha = 0.9998999$$*, the initial level is* $$l_0 = 9.310387$$*, and the innovation variance is* $$\sigma^2 = 1.3942$$ *These parameters define the simple exponential smoothing model fitted to the savings series.*
+
+d.  Based on the fitted parameters, what simple forecasting method is this similar to?
+
+    *The fitted model is ETS(A,N,N), which corresponds to simple exponential smoothing. Since the estimated smoothing parameter* $$\alpha = 0.9998999$$ *is very close to 1, the model places almost all weight on the most recent observation. Therefore, the forecasts are very similar to those produced by the Naive forecasting method, where the next forecast is approximately equal to the last observed value.*
+
+e.  Based on your answer to d), how does the width of the prediction interval change as a function of the forecast horizon $h$? Make a plot to verify this.
+
+    ```{r}
+    fc_ets <- fit_ets |>
+      forecast(h = 10)
+
+    fc_ets |>
+      autoplot(canada_savings) +
+      labs(
+        title = "ETS forecasts for Canada's savings series",
+        y = "Savings"
+      )
+
+    ```
+
+    *Based on part (d), for the ETS(A,N,N) model with* $\alpha \approx 1$ *(naive method), the* $h$*-step-ahead forecast variance is:*
+
+    $$
+    \text{Var}(y_{T+h} \mid y_{1:T}) = \sigma^2 \cdot h
+    $$
+
+    *Therefore, the 95% prediction interval is:*
+
+    $$
+    \hat{y}_{T+h|T} \pm 1.96\,\sigma\sqrt{h}
+    $$
+
+    *and the width of the prediction interval is:*
+
+    $$
+    W(h) = 2 \times 1.96\,\sigma\sqrt{h} = 3.92\,\sigma\sqrt{h}
+    $$
+
+    *The width grows proportionally to* $\sqrt{h}$*. This means the prediction interval gets wider as the forecast horizon increases, but at a decreasing rate (concave shape). The plot below confirms this square-root relationship.*
+
+## 3. Moving averages and differences
+
+Consider the linear trend model $$
+X_t = \beta_0 + \beta_1 t + W_t.
+$$ Define a time series $(Y_t)$ by taking a moving average of $(X_t)$ with a symmetric window of size 7. Define another times series $(Z_t)$ by taking a difference of $(X_t)$.
+
+a.  What is the mean function for $(Y_t)$? What is the ACVF for $(Y_t)$?
+
+    $$
+    E(W_t)=0,\qquad \operatorname{Var}(W_t)=\sigma_W^2,\qquad \operatorname{Cov}(W_t,W_s)=0 \text{ for } t \ne s.
+    $$
+
+    *A symmetric moving average of size 7 is defined as*
+
+    $$
+    Y_t=\frac{1}{7}\sum_{j=-3}^{3} X_{t+j}.
+    $$
+
+    ***Mean function of*** $(Y_t)$
+
+    *From definition,*
+
+    $$
+    Y_t=\frac{1}{7}\sum_{j=-3}^{3} X_{t+j}.
+    $$
+
+    *Substituting* $(X_{t+j})$*,*
+
+    $$
+    Y_t=\frac{1}{7}\sum_{j=-3}^{3}\left[\beta_0+\beta_1(t+j)+W_{t+j}\right].
+    $$
+
+    $$
+    Y_t
+    =
+    \frac{1}{7}
+    \left(
+    \sum_{j=-3}^{3}\beta_0
+    +
+    \sum_{j=-3}^{3}\beta_1(t+j)
+    +
+    \sum_{j=-3}^{3}W_{t+j}
+    \right).
+    $$
+
+    *Now,*
+
+    $$
+    \sum_{j=-3}^{3}\beta_0 = 7\beta_0
+    $$
+
+    *and*
+
+    $$
+    \sum_{j=-3}^{3}\beta_1(t+j)
+    =
+    \beta_1\sum_{j=-3}^{3}(t+j)
+    =
+    \beta_1\left(\sum_{j=-3}^{3} t + \sum_{j=-3}^{3} j\right).
+    $$
+
+    *Since there are 7 terms,*
+
+    $$
+    \sum_{j=-3}^{3} t = 7t,
+    $$
+
+    *and by symmetry,*
+
+    $$
+    \sum_{j=-3}^{3} j = -3-2-1+0+1+2+3=0.
+    $$
+
+    *Hence,*
+
+    $$
+    \sum_{j=-3}^{3}\beta_1(t+j)=7\beta_1 t.
+    $$
+
+    *Therefore,*
+
+    $$
+    Y_t=\frac{1}{7}\left(7\beta_0+7\beta_1 t+\sum_{j=-3}^{3}W_{t+j}\right)
+    =\beta_0+\beta_1 t+\frac{1}{7}\sum_{j=-3}^{3}W_{t+j}.
+    $$
+
+    *Taking expectation on both sides,*
+
+    $$
+    E(Y_t)
+    =
+    \beta_0+\beta_1 t+\frac{1}{7}\sum_{j=-3}^{3}E(W_{t+j}).
+    $$
+
+    *Since* $(E(W_{t+j})=0)$*,*
+
+    $$
+    E(Y_t)=\beta_0+\beta_1 t.
+    $$
+
+    *Thus, the mean function of* $(Y_t)$ *is*
+
+    $$
+    \mu_Y(t)=E(Y_t)=\beta_0+\beta_1 t.
+    $$
+
+    ***ACVF of*** $(Y_t)$
+
+    *The autocovariance function is*
+
+    $$
+    \gamma_Y(h)=\operatorname{Cov}(Y_t,Y_{t+h}).
+    $$
+
+    *Using the expression derived above,*
+
+    $$
+    Y_t=\beta_0+\beta_1 t+\frac{1}{7}\sum_{j=-3}^{3}W_{t+j}
+    $$
+
+    *and*
+
+    $$
+    Y_{t+h}=\beta_0+\beta_1(t+h)+\frac{1}{7}\sum_{k=-3}^{3}W_{t+h+k}.
+    $$
+
+    *Since the deterministic terms do not affect covariance,*
+
+    $$
+    \gamma_Y(h)
+    =
+    \operatorname{Cov}\left(
+    \frac{1}{7}\sum_{j=-3}^{3}W_{t+j},
+    \frac{1}{7}\sum_{k=-3}^{3}W_{t+h+k}
+    \right).
+    $$
+
+    *Hence,*
+
+    $$
+    \gamma_Y(h)
+    =
+    \frac{1}{49}
+    \sum_{j=-3}^{3}\sum_{k=-3}^{3}
+    \operatorname{Cov}(W_{t+j},W_{t+h+k}).
+    $$
+
+    *Because* $((W_t))$ *is white noise,*
+
+    $$
+    \operatorname{Cov}(W_{t+j},W_{t+h+k})=
+    \begin{cases}
+    \sigma_W^2, & \text{if } t+j=t+h+k,\\
+    0, & \text{otherwise.}
+    \end{cases}
+    $$
+
+    *So only overlapping terms contribute to the covariance. The two windows are*
+
+    $$
+    \{t-3,t-2,t-1,t,t+1,t+2,t+3\}
+    $$
+
+    *and*
+
+    $$
+    \{t+h-3,t+h-2,t+h-1,t+h,t+h+1,t+h+2,t+h+3\}.
+    $$
+
+    *These windows overlap only when* $(|h|\le 6)$*. The number of overlapping terms is*
+
+    $$
+    7-|h|, \qquad |h|\le 6.
+    $$
+
+    *Therefore,*
+
+    $$
+    \gamma_Y(h)=\frac{(7-|h|)\sigma_W^2}{49}, \qquad |h|\le 6,
+    $$
+
+    *and*
+
+    $$
+    \gamma_Y(h)=0, \qquad |h|>6.
+    $$
+
+    *Thus, the ACVF of* $(Y_t)$ *is*
+
+    $$
+    \gamma_Y(h)=
+    \begin{cases}
+    \dfrac{(7-|h|)\sigma_W^2}{49}, & |h|\le 6,\\[1em]
+    0, & |h|>6.
+    \end{cases}
+    $$
+
+b.  What is the mean function for $(Z_t)$? What is its ACVF?
+
+    $(Z_t)$ *is defined as,*
+
+    $$
+    Z_t = X_t - X_{t-1}.
+    $$
+
+    *Using the model*
+
+    $$
+    X_t = \beta_0 + \beta_1 t + W_t,
+    $$
+
+    *we have*
+
+    $$
+    X_{t-1} = \beta_0 + \beta_1 (t-1) + W_{t-1}.
+    $$
+
+    *Hence,*
+
+    $$
+    \begin{aligned}
+    Z_t
+    &= X_t - X_{t-1} \\
+    &= \left(\beta_0 + \beta_1 t + W_t\right) - \left(\beta_0 + \beta_1(t-1) + W_{t-1}\right) \\
+    &= \beta_0 + \beta_1 t + W_t - \beta_0 - \beta_1 t + \beta_1 - W_{t-1} \\
+    &= \beta_1 + W_t - W_{t-1}.
+    \end{aligned}
+    $$
+
+    ***Mean function of*** $(Z_t)$
+
+    *Taking expectation,*
+
+    $$
+    E(Z_t)=E(\beta_1 + W_t - W_{t-1}).
+    $$
+
+    *Using linearity of expectation,*
+
+    $$
+    E(Z_t)=\beta_1 + E(W_t) - E(W_{t-1}).
+    $$
+
+    *Since* $((W_t))$ *is white noise with* $(E(W_t)=0)$*,*
+
+    $$
+    E(Z_t)=\beta_1.
+    $$
+
+    *Thus, the mean function of* $(Z_t)$ *is*
+
+    $$
+    \mu_Z(t)=E(Z_t)=\beta_1.
+    $$
+
+    *So* $(Z_t)$ *has constant mean.*
+
+    ***ACVF of*** $(Z_t)$
+
+    *The autocovariance function is*
+
+    $$
+    \gamma_Z(h)=\operatorname{Cov}(Z_t, Z_{t+h}).
+    $$
+
+    *Using*
+
+    $$
+    Z_t=\beta_1 + W_t - W_{t-1}
+    $$
+
+    *and*
+
+    $$
+    Z_{t+h}=\beta_1 + W_{t+h} - W_{t+h-1},
+    $$
+
+    *the constant term* $(\beta_1)$ *does not affect covariance, so*
+
+    $$
+    \gamma_Z(h)
+    =
+    \operatorname{Cov}(W_t-W_{t-1},\, W_{t+h}-W_{t+h-1}).
+    $$
+
+    *Expanding,*
+
+    $$
+    \begin{aligned}
+    \gamma_Z(h)
+    &= \operatorname{Cov}(W_t, W_{t+h})
+    - \operatorname{Cov}(W_t, W_{t+h-1}) \\
+    &\quad - \operatorname{Cov}(W_{t-1}, W_{t+h})
+    + \operatorname{Cov}(W_{t-1}, W_{t+h-1}).
+    \end{aligned}
+    $$
+
+    *Since* $((W_t))$ *is white noise,*
+
+    $$
+    \operatorname{Cov}(W_a,W_b)=
+    \begin{cases}
+    \sigma_W^2, & a=b,\\
+    0, & a\ne b.
+    \end{cases}
+    $$
+
+    *We now consider different values of (h).*
+
+    *Case 1: (h=0)*
+
+    $$
+    \begin{aligned}
+    \gamma_Z(0)
+    &= \operatorname{Var}(W_t-W_{t-1}) \\
+    &= \operatorname{Var}(W_t)+\operatorname{Var}(W_{t-1})-2\operatorname{Cov}(W_t,W_{t-1}) \\
+    &= \sigma_W^2+\sigma_W^2-0 \\
+    &= 2\sigma_W^2.
+    \end{aligned}
+    $$
+
+    *Case 2: (h=1)*
+
+    $$
+    \begin{aligned}
+    \gamma_Z(1)
+    &= \operatorname{Cov}(W_t-W_{t-1},\, W_{t+1}-W_t) \\
+    &= \operatorname{Cov}(W_t,W_{t+1})
+    - \operatorname{Cov}(W_t,W_t) \\
+    &\quad - \operatorname{Cov}(W_{t-1},W_{t+1})
+    + \operatorname{Cov}(W_{t-1},W_t) \\
+    &= 0 - \sigma_W^2 - 0 + 0 \\
+    &= -\sigma_W^2.
+    \end{aligned}
+    $$
+
+    *Case 3: (h=-1)*
+
+    *By symmetry of the autocovariance function,*
+
+    $$
+    \gamma_Z(-1)=\gamma_Z(1)=-\sigma_W^2.
+    $$
+
+    *Case 4: (\|h\|\>1)*
+
+    *If (\|h\|\>1), none of the time indices coincide, so all covariance terms are zero. Hence,*
+
+    $$
+    \gamma_Z(h)=0, \qquad |h|>1.
+    $$
+
+    *Therefore, the ACVF of* $(Z_t)$ *is*
+
+    $$
+    \gamma_Z(h)=
+    \begin{cases}
+    2\sigma_W^2, & h=0,\\[0.5em]
+    -\sigma_W^2, & h=\pm 1,\\[0.5em]
+    0, & |h|>1.
+    \end{cases}
+    $$
+
+c.  What is the CCF of $(Y_t)$ and $(Z_t)$?
+
+    *From earlier parts,*
+
+    $$
+    Y_t = \frac{1}{7}\sum_{j=-3}^{3} X_{t+j}, \qquad
+    Z_t = X_t - X_{t-1},
+    $$
+
+    *where*
+
+    $$
+    X_t = \beta_0 + \beta_1 t + W_t,
+    $$
+
+    *and* $((W_t))$ *is white noise with variance* $(\sigma_W^2)$*.*
+
+    *Substituting into* $(Y_t)$ *and* $(Z_t)$*,*
+
+    $$
+    Y_t = \beta_0 + \beta_1 t + \frac{1}{7}\sum_{j=-3}^{3} W_{t+j},
+    $$
+
+    $$
+    Z_t = \beta_1 + W_t - W_{t-1}.
+    $$
+
+    *Since deterministic terms do not affect covariance, the cross-covariance function is*
+
+    $$
+    \gamma_{YZ}(h) = \operatorname{Cov}(Y_t, Z_{t+h}).
+    $$
+
+    *Substituting the stochastic components,*
+
+    $$
+    \gamma_{YZ}(h)
+    =
+    \operatorname{Cov}\left(
+    \frac{1}{7}\sum_{j=-3}^{3} W_{t+j},\,
+    W_{t+h}-W_{t+h-1}
+    \right).
+    $$
+
+    *Taking the constant outside,*
+
+    $$
+    \gamma_{YZ}(h)
+    =
+    \frac{1}{7}
+    \sum_{j=-3}^{3}
+    \operatorname{Cov}\left(W_{t+j}, W_{t+h}-W_{t+h-1}\right).
+    $$
+
+    *Expanding the covariance,*
+
+    $$
+    \gamma_{YZ}(h)
+    =
+    \frac{1}{7}
+    \sum_{j=-3}^{3}
+    \left[
+    \operatorname{Cov}(W_{t+j},W_{t+h})
+    -
+    \operatorname{Cov}(W_{t+j},W_{t+h-1})
+    \right].
+    $$
+
+    *Since* $((W_t))$ *is white noise,*
+
+    $$
+    \operatorname{Cov}(W_a,W_b)=
+    \begin{cases}
+    \sigma_W^2, & a=b, \\
+    0, & a\ne b .
+    \end{cases}
+    $$
+
+    *Therefore, contributions occur when*
+
+    $$
+    t+j=t+h \quad \text{or} \quad t+j=t+h-1.
+    $$
+
+    *Hence*
+
+    $$
+    j=h \quad \text{or} \quad j=h-1,
+    $$
+
+    *provided* $(j \in [-3,3])$*.*
+
+    *Thus the cross-covariance function becomes*
+
+    $$
+    \gamma_{YZ}(h)
+    =
+    \frac{\sigma_W^2}{7}
+    \Big(
+    \mathbf{1}_{\{-3 \le h \le 3\}}
+    -
+    \mathbf{1}_{\{-2 \le h \le 4\}}
+    \Big).
+    $$
+
+    *Therefore, the non-zero values are*
+
+    $$
+    \gamma_{YZ}(-3)=\frac{\sigma_W^2}{7}, \qquad
+    \gamma_{YZ}(4)=-\frac{\sigma_W^2}{7},
+    $$
+
+    *and*
+
+    $$
+    \gamma_{YZ}(h)=0 \quad \text{otherwise}.
+    $$
+
+d.  Are $(Y_t)$ and $(Z_t)$ jointly stationary?
+
+    *To determine whether* $((Y_t))$ *and* $((Z_t))$ *are jointly stationary, we check whether both series have constant means and whether their auto- and cross-covariances depend only on lag.*
+
+    *From earlier results,*
+
+    $$
+    Y_t=\beta_0+\beta_1 t+\frac{1}{7}\sum_{j=-3}^{3}W_{t+j},
+    $$
+
+    *so*
+
+    $$
+    E(Y_t)=\beta_0+\beta_1 t,
+    $$
+
+    *which depends on* $(t)$*. Hence,* $((Y_t))$ *is not stationary.*
+
+    *Also,*
+
+    $$
+    Z_t=X_t-X_{t-1}=\beta_1+W_t-W_{t-1},
+    $$
+
+    *so*
+
+    $$
+    E(Z_t)=\beta_1,
+    $$
+
+    *which is constant, and its ACVF depends only on lag. Thus,* $((Z_t))$ *is stationary.*
+
+    *The cross-covariance function* $(\gamma{YZ}(h)=\operatorname{Cov}(Y_t,Z{t+h}))$ *depends only on the* $lag (h)$*, since it is determined entirely by the white noise terms. However, joint stationary requires both component series to be stationary.*
+
+    *Therefore,* $((Y_t))$ *and* $((Z_t))$ *are not jointly stationary, because* $((Y_t))$ *has a time-varying mean.*
+
+## 4. Sample vs population ACF
+
+Consider the signal plus noise model $$
+X_t = \sin(2\pi t/5) + W_t.
+$$
+
+a.  What is the ACF of $(X_t)$?
+
+    *Consider the signal-plus-noise model*
+
+    $$
+    X_t=\sin\!\left(\frac{2\pi t}{5}\right)+W_t,
+    $$
+
+    *where* $((W_t))$ *is a white noise process with*
+
+    $$
+    E(W_t)=0,\qquad \operatorname{Var}(W_t)=\sigma_W^2,\qquad \operatorname{Cov}(W_t,W_s)=0 \text{ for } t\ne s.
+    $$
+
+    *Mean function:*
+
+    $$
+    E(X_t)=E\left[\sin\!\left(\frac{2\pi t}{5}\right)+W_t\right].
+    $$
+
+    *By linearity of expectation,*
+
+    $$
+    E(X_t)=\sin\!\left(\frac{2\pi t}{5}\right)+E(W_t).
+    $$
+
+    *Since* $(E(W_t)=0)$*,*
+
+    $$
+    E(X_t)=\sin\!\left(\frac{2\pi t}{5}\right).
+    $$
+
+    *Hence, the mean depends on* $(t)$*, so* $((X_t))$ *is not weakly stationary.*
+
+    *Autocovariance function is*
+
+    $$
+    \gamma_X(t,h)=\operatorname{Cov}(X_t,X_{t+h}).
+    $$
+
+    *Now,*
+
+    $$
+    X_t=\sin\!\left(\frac{2\pi t}{5}\right)+W_t,
+    \qquad
+    X_{t+h}=\sin\!\left(\frac{2\pi (t+h)}{5}\right)+W_{t+h}.
+    $$
+
+    *Therefore,*
+
+    $$
+    \gamma_X(t,h)
+    =
+    \operatorname{Cov}\left(
+    \sin\!\left(\frac{2\pi t}{5}\right)+W_t,\,
+    \sin\!\left(\frac{2\pi (t+h)}{5}\right)+W_{t+h}
+    \right).
+    $$
+
+    *Since the sine terms are deterministic, they do not affect covariance. Thus,*
+
+    $$
+    \gamma_X(t,h)=\operatorname{Cov}(W_t,W_{t+h}).
+    $$
+
+    *Because* $((W_t))$ *is white noise,*
+
+    $$
+    \gamma_X(t,h)=
+    \begin{cases}
+    \sigma_W^2, & h=0,\\
+    0, & h\ne 0.
+    \end{cases}
+    $$
+
+    *Also,*
+
+    $$
+    \operatorname{Var}(X_t)=\sigma_W^2.
+    $$
+
+    *Hence, the autocorrelation function is*
+
+    $$
+    \rho_X(t,h)=\frac{\gamma_X(t,h)}{\sqrt{\operatorname{Var}(X_t)\operatorname{Var}(X_{t+h})}}
+    =
+    \frac{\gamma_X(t,h)}{\sigma_W^2}.
+    $$
+
+    *Therefore,*
+
+    $$
+    \rho_X(t,h)=
+    \begin{cases}
+    1, & h=0,\\
+    0, & h\ne 0.
+    \end{cases}
+    $$
+
+    *Thus, although the process has a periodic mean, its covariance structure is the same as white noise.*
+
+b.  Simulate a time series $X_1,X_2,\ldots,X_{200}$ from this model and plot its sample ACF.
+
+    ```{r}
+    set.seed(123)
+
+    n <- 200
+    t <- 1:n
+    sigma_w <- 1
+
+    W <- rnorm(n, mean = 0, sd = sigma_w)
+    X <- sin(2*pi*t/5) + W
+
+    plot.ts(X,
+            main = "Simulated time series from X_t = sin(2πt/5) + W_t",
+            ylab = expression(X[t]),
+            xlab = "Time")
+
+    acf(X, main = "Sample ACF of simulated series")
+    ```
+
+c.  Why does the sample ACF not look like the population ACF function?
+
+    *The sample ACF does not look like the population ACF because the process*
+
+    $$
+    X_t = \sin\!\left(\frac{2\pi t}{5}\right) + W_t
+    $$
+
+    *is not stationary.*
+
+    *In part (a), we derived the population ACF assuming the mean was removed. The deterministic sinusoidal term contributes only to the mean function*
+
+    $$
+    E(X_t) = \sin\!\left(\frac{2\pi t}{5}\right),
+    $$
+
+    *while the covariance structure comes only from the white noise process* $(W_t)$*. Hence, the population ACF is*
+
+    $$
+    \rho_X(h)=
+    \begin{cases}
+    1, & h=0,\\
+    0, & h\neq 0.
+    \end{cases}
+    $$
+
+    *However, when we compute the sample ACF, it is calculated from the observed series* $(X_t)$ *without removing the time-varying mean. Because the mean contains a periodic sinusoidal component with period 5, the sample ACF detects this periodic pattern and shows large correlations at lags near multiples of 5.*
+
+    *Therefore, the sample ACF reflects the periodic structure in the mean, while the population ACF derived in part (a) reflects only the white-noise covariance structure.*
+
+d.  Why does the asymptotic normality theorem for the ACF not apply?
+
+    *The asymptotic normality theorem for the sample ACF assumes that the underlying time series is weakly stationary with a constant mean and finite variance. Under these conditions, the sample autocorrelations are approximately normally distributed for large samples, with variance approximately (1/n).*
+
+    *However, the process*
+
+    $$
+    X_t = \sin\!\left(\frac{2\pi t}{5}\right) + W_t
+    $$
+
+    *is not stationary because its mean function depends on time:*
+
+    $$
+    E(X_t) = \sin\!\left(\frac{2\pi t}{5}\right).
+    $$
+
+    *Since the mean is periodic and not constant, the assumptions required for the asymptotic normality of the sample ACF are violated.*
+
+    *Consequently, the usual result that the sample autocorrelations are approximately normally distributed with variance (1/n) does not apply. The periodic deterministic signal introduces systematic correlations that are not due to the stochastic dependence structure of the noise, causing the sample ACF to deviate from the theoretical white-noise behavior.*
+
+## 5. Gaussian processes
+
+Consider a random vector $(X_1,X_2,X_3,X_4)$ that has the joint Gaussian distribution
+
+$$
+\begin{bmatrix} X_1 \\ X_2 \\ X_3 \\ X_4\end{bmatrix} \sim N\left(\begin{bmatrix} -0.5 \\ 0 \\ 0.5 \\ 2\end{bmatrix}, \begin{bmatrix} 3 & 1 & 1 & 1 \\ 1 & 3 & 1 & 1 \\ 1 & 1 & 3 & 2 \\ 1 & 1 & 2 & 3\end{bmatrix} \right)
+$$
+
+a.  What is the marginal variance of $X_4$?
+
+    ```{r}
+    A <- matrix(c(3, 1, 1, 1,
+                  1, 3, 1, 1,
+                  1, 1, 3, 2,
+                  1, 1, 2, 3),
+                nrow = 4, ncol = 4, byrow = TRUE)
+
+    mu <- c(-0.5, 0, 0.5, 2)
+
+    Sigma11 <- A[1:3, 1:3]
+    Sigma14 <- A[1:3, 4]
+    Sigma41 <- A[4, 1:3]
+    Sigma44 <- A[4, 4]
+
+    x_obs <- c(1, 1, 1)
+
+    A[4, 4]
+    ```
+
+    *The marginal variance of a component of a multivariate normal vector is given by the corresponding diagonal element of the covariance matrix.*
+
+    *The covariance matrix is*
+
+    $$
+    \Sigma =
+    \begin{pmatrix}
+    3 & 1 & 1 & 1 \\
+    1 & 3 & 1 & 1 \\
+    1 & 1 & 3 & 2 \\
+    1 & 1 & 2 & 3
+    \end{pmatrix}.
+    $$
+
+    *Hence, the marginal variance of* $(X_4)$ *is the* $((4,4))$ *element of* $(\Sigma)$*:*
+
+    $$
+    \operatorname{Var}(X_4)=\Sigma_{44}=3.
+    $$
+
+b.  What is the conditional variance of $X_4$, conditioned on the observations $X_1=1,X_2=1,X_3=1$. Does it depend on these particular values? *Hint: The following code snippet creates matrix in R. You may use `solve()` to find the inverse of a matrix.*
+
+    ```{r}
+    cond_var <- Sigma44 - Sigma41 %*% solve(Sigma11) %*% Sigma14
+    cond_var
+    ```
+
+    *The conditional variance of (X_4) given ((X_1,X_2,X_3)) is*
+
+    $$
+    \operatorname{Var}(X_4\mid X_1,X_2,X_3)
+    =
+    \Sigma_{44}
+    -
+    \Sigma_{4,1:3}\Sigma_{1:3,1:3}^{-1}\Sigma_{1:3,4}.
+    $$
+
+    *From the covariance matrix,*
+
+    $$
+    \Sigma=
+    \begin{pmatrix}
+    3&1&1&1\\
+    1&3&1&1\\
+    1&1&3&2\\
+    1&1&2&3
+    \end{pmatrix},
+    $$
+
+    *we have*
+
+    $$
+    \Sigma_{1:3,1:3}=
+    \begin{pmatrix}
+    3&1&1\\
+    1&3&1\\
+    1&1&3
+    \end{pmatrix}, \qquad
+    \Sigma_{4,1:3}=
+    \begin{pmatrix}
+    1&1&2
+    \end{pmatrix}, \qquad
+    \Sigma_{1:3,4}=
+    \begin{pmatrix}
+    1\\
+    1\\
+    2
+    \end{pmatrix},
+    $$
+
+    *and*
+
+    $$
+    \Sigma_{44}=3.
+    $$
+
+    *Also,*
+
+    $$
+    \Sigma_{1:3,1:3}^{-1}
+    =
+    \begin{pmatrix}
+    0.4 & -0.1 & -0.1\\
+    -0.1 & 0.4 & -0.1\\
+    -0.1 & -0.1 & 0.4
+    \end{pmatrix}.
+    $$
+
+    *Hence,*
+
+    $$
+    \Sigma_{4,1:3}\Sigma_{1:3,1:3}^{-1}
+    =
+    \begin{pmatrix}
+    1&1&2
+    \end{pmatrix}
+    \begin{pmatrix}
+    0.4 & -0.1 & -0.1\\
+    -0.1 & 0.4 & -0.1\\
+    -0.1 & -0.1 & 0.4
+    \end{pmatrix}
+    =
+    \begin{pmatrix}
+    0.1&0.1&0.6
+    \end{pmatrix}.
+    $$
+
+    *Therefore,*
+
+    $$
+    \Sigma_{4,1:3}\Sigma_{1:3,1:3}^{-1}\Sigma_{1:3,4}
+    =
+    \begin{pmatrix}
+    0.1&0.1&0.6
+    \end{pmatrix}
+    \begin{pmatrix}
+    1\\
+    1\\
+    2
+    \end{pmatrix}
+    =
+    1.4.
+    $$
+
+    *Thus,*
+
+    $$
+    \operatorname{Var}(X_4\mid X_1,X_2,X_3)=3-1.4=1.6.
+    $$
+
+    *So,*
+
+    $$
+    \operatorname{Var}(X_4\mid X_1,X_2,X_3)=1.6.
+    $$
+
+    *This conditional variance does not depend on the observed values* $(X_1=1)$, $(X_2=1)$*, and* $(X_3=1)$ *it depends only on the covariance matrix.*
+
+c.  What is the conditional mean of $X_4$, conditioned on the observations $X_1=1,X_2=1,X_3=1$?
+
+    ```{r}
+    cond_mean <- mu[4] + Sigma41 %*% solve(Sigma11) %*% (x_obs - mu[1:3])
+    cond_mean
+    ```
+
+    *For a multivariate normal vector, the conditional mean of* $X_4$ *given* $(X_1,X_2,X_3)$ *is*
+
+    $$
+    E(X_4 \mid X_1,X_2,X_3)
+    =
+    \mu_4
+    +
+    \Sigma_{4,1:3}\Sigma_{1:3,1:3}^{-1}
+    \left(
+    \begin{pmatrix}
+    X_1\\
+    X_2\\
+    X_3
+    \end{pmatrix}
+    -
+    \begin{pmatrix}
+    \mu_1\\
+    \mu_2\\
+    \mu_3
+    \end{pmatrix}
+    \right).
+    $$
+
+    *From the mean vector,*
+
+    $$
+    \mu =
+    \begin{pmatrix}
+    -0.5\\
+    0\\
+    0.5\\
+    2
+    \end{pmatrix},
+    $$
+
+    *we have*
+
+    $$
+    \mu_4 = 2,
+    \qquad
+    \mu_{1:3} =
+    \begin{pmatrix}
+    -0.5\\
+    0\\
+    0.5
+    \end{pmatrix}.
+    $$
+
+    *From part (b),*
+
+    $$
+    \Sigma_{4,1:3}\Sigma_{1:3,1:3}^{-1}
+    =
+    \begin{pmatrix}
+    0.1 & 0.1 & 0.6
+    \end{pmatrix}.
+    $$
+
+    *Since* $(X_1,X_2,X_3)=(1,1,1)$*,*
+
+    $$
+    \begin{pmatrix}
+    X_1\\
+    X_2\\
+    X_3
+    \end{pmatrix}
+    -
+    \begin{pmatrix}
+    \mu_1\\
+    \mu_2\\
+    \mu_3
+    \end{pmatrix}
+    =
+    \begin{pmatrix}
+    1-(-0.5)\\
+    1-0\\
+    1-0.5
+    \end{pmatrix}
+    =
+    \begin{pmatrix}
+    1.5\\
+    1\\
+    0.5
+    \end{pmatrix}.
+    $$
+
+    *Therefore,*
+
+    $$
+    E(X_4 \mid X_1=1,X_2=1,X_3=1)
+    =
+    2+
+    \begin{pmatrix}
+    0.1 & 0.1 & 0.6
+    \end{pmatrix}
+    \begin{pmatrix}
+    1.5\\
+    1\\
+    0.5
+    \end{pmatrix}.
+    $$
+
+    *Matrix product:*
+
+    $$
+    0.1(1.5)+0.1(1)+0.6(0.5)
+    =
+    0.15+0.1+0.3
+    =
+    0.55.
+    $$
+
+    *Hence,*
+
+    $$
+    E(X_4 \mid X_1=1,X_2=1,X_3=1)=2+0.55=2.55.
+    $$
+
+    *Therefore,*
+
+    $$
+    E(X_4 \mid X_1=1,X_2=1,X_3=1)=2.55.
+    $$
+
+d.  Write a level 95% prediction interval for $X_4$ given these observations.
+
+    ```{r}
+    lower <- as.numeric(cond_mean) - 1.96 * sqrt(as.numeric(cond_var))
+    upper <- as.numeric(cond_mean) + 1.96 * sqrt(as.numeric(cond_var))
+
+    c(lower, upper)
+    ```
+
+    *Since* $(X_1,X_2,X_3,X_4)$ *is jointly Gaussian, the conditional distribution of* $X_4$ *given* $X_1=1$*,* $X_2=1$*, and* $X_3=1$ *is normal with conditional mean and variance obtained from parts (b) and (c):*
+
+    $$
+    X_4 \mid X_1=1,X_2=1,X_3=1 \sim N(2.55,\,1.6).
+    $$
+
+    *Therefore, a* $95\%$ *prediction interval for* $X_4$ *is*
+
+    $$
+    2.55 \pm 1.96\sqrt{1.6}.
+    $$
+
+    *Since*
+
+    $$
+    \sqrt{1.6} \approx 1.2649,
+    $$
+
+    *we obtain*
+
+    $$
+    1.96\sqrt{1.6} \approx 1.96(1.2649) \approx 2.4792.
+    $$
+
+    *Thus the prediction interval is*
+
+    $$
+    (2.55-2.4792,\;2.55+2.4792)
+    =
+    (0.0708,\;5.0292).
+    $$
+
+    *Hence, the* $95\%$ *prediction interval is*
+
+    $$
+    (0.0708,\;5.0292).
+    $$
+
+**AI Declaration:**
+
+ChatGPT was used as a supplementary tool to assist with conceptual clarification and LaTeX formatting during the preparation of this assignment. All mathematical derivations, computations, and final answers were carried out by the author.
